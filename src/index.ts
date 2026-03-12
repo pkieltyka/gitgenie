@@ -10,7 +10,7 @@ import { getDefaultProvider, getDefaultModel, showConfig, setDefaultModel, setDe
 // Version
 // ---------------------------------------------------------------------------
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 // ---------------------------------------------------------------------------
 // Help text
