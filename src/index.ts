@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { login, logout, authStatus, listProviders, listModelsCmd } from "./auth.js";
 import { releaseNotesCommand } from "./commands/release-notes.js";
 import { reviewCommand } from "./commands/review.js";
+import { getDefaultProvider, getDefaultModel, showConfig, setDefaultModel, setDefaultProvider } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Version
@@ -15,7 +16,11 @@ const VERSION = "0.1.0";
 // Help text
 // ---------------------------------------------------------------------------
 
-const HELP = `git-genie v${VERSION} — LLM-powered release notes and code reviews from git history
+function helpText(): string {
+  const defaultProvider = getDefaultProvider();
+  const defaultModel = getDefaultModel(defaultProvider);
+
+  return `git-genie v${VERSION} — LLM-powered release notes and code reviews from git history
 
 Usage:
   gitgenie <command> [options]
@@ -28,10 +33,13 @@ Commands:
   auth-status                           Show which providers are authenticated
   list-providers                        List available LLM providers
   list-models [provider]                List available models
+  config                                Show current configuration
+  config set-model <provider> <model>   Set default model for a provider
+  config set-provider <provider>        Set default provider
 
 Global Options:
-  --provider <name>   LLM provider (default: anthropic)
-  --model <model>     LLM model (default: claude-sonnet-4-20250514)
+  --provider <name>   LLM provider (default: ${defaultProvider})
+  --model <model>     LLM model (default: ${defaultModel})
   --verbose           Show git data, token usage, and cost
   --help              Show this help
   --version           Show version
@@ -52,7 +60,10 @@ Examples:
   gitgenie review abc123
   gitgenie review abc123 def456 --save
   gitgenie list-models anthropic
+  gitgenie config set-model anthropic claude-opus-4-5
+  gitgenie config set-provider anthropic
 `;
+}
 
 // ---------------------------------------------------------------------------
 // Main
@@ -62,7 +73,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.log(HELP);
+    console.log(helpText());
     process.exit(0);
   }
 
@@ -70,7 +81,7 @@ async function main(): Promise<void> {
 
   // Handle simple commands that don't need flag parsing
   if (subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
-    console.log(HELP);
+    console.log(helpText());
     process.exit(0);
   }
 
@@ -98,6 +109,10 @@ async function main(): Promise<void> {
 
     case "list-models":
       listModelsCmd(args[1]);
+      break;
+
+    case "config":
+      handleConfig(args.slice(1));
       break;
 
     case "release-notes":
@@ -134,14 +149,16 @@ function handleLogout(args: string[]): void {
 }
 
 async function handleReleaseNotes(args: string[]): Promise<void> {
+  const defaultProvider = getDefaultProvider();
+
   const { values, positionals } = parseArgs({
     args,
     options: {
       deep: { type: "boolean", default: false },
       save: { type: "boolean", default: false },
       output: { type: "string" },
-      provider: { type: "string", default: "anthropic" },
-      model: { type: "string", default: "claude-sonnet-4-20250514" },
+      provider: { type: "string" },
+      model: { type: "string" },
       verbose: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -156,26 +173,31 @@ async function handleReleaseNotes(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  const provider = values.provider ?? defaultProvider;
+  const model = values.model ?? getDefaultModel(provider);
+
   await releaseNotesCommand({
     fromRef: positionals[0],
     toRef: positionals[1],
     deep: values.deep,
     save: values.save,
     output: values.output,
-    provider: values.provider!,
-    model: values.model!,
+    provider,
+    model,
     verbose: values.verbose,
   });
 }
 
 async function handleReview(args: string[]): Promise<void> {
+  const defaultProvider = getDefaultProvider();
+
   const { values, positionals } = parseArgs({
     args,
     options: {
       save: { type: "boolean", default: false },
       output: { type: "string" },
-      provider: { type: "string", default: "anthropic" },
-      model: { type: "string", default: "claude-sonnet-4-20250514" },
+      provider: { type: "string" },
+      model: { type: "string" },
       verbose: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -190,15 +212,59 @@ async function handleReview(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  const provider = values.provider ?? defaultProvider;
+  const model = values.model ?? getDefaultModel(provider);
+
   await reviewCommand({
     startRef: positionals[0],
     endRef: positionals[1],
     save: values.save,
     output: values.output,
-    provider: values.provider!,
-    model: values.model!,
+    provider,
+    model,
     verbose: values.verbose,
   });
+}
+
+function handleConfig(args: string[]): void {
+  if (args.length === 0) {
+    showConfig();
+    return;
+  }
+
+  const subcmd = args[0];
+
+  if (subcmd === "set-model") {
+    const provider = args[1];
+    const model = args[2];
+    if (!provider || !model) {
+      console.error("Usage: gitgenie config set-model <provider> <model>");
+      console.error("");
+      console.error("Examples:");
+      console.error("  gitgenie config set-model anthropic claude-opus-4-5");
+      console.error("  gitgenie config set-model openai gpt-4o");
+      process.exit(1);
+    }
+    setDefaultModel(provider, model);
+    return;
+  }
+
+  if (subcmd === "set-provider") {
+    const provider = args[1];
+    if (!provider) {
+      console.error("Usage: gitgenie config set-provider <provider>");
+      console.error("");
+      console.error("Examples:");
+      console.error("  gitgenie config set-provider anthropic");
+      process.exit(1);
+    }
+    setDefaultProvider(provider);
+    return;
+  }
+
+  console.error(`Unknown config command: ${subcmd}`);
+  console.error("Available: config, config set-model, config set-provider");
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
