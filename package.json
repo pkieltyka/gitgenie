@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "gitgenie": "./src/index.ts"
+    "gitgenie": "./bin/gitgenie"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
