@@ -23,10 +23,29 @@ function ensureConfigDir(): void {
 }
 
 // ---------------------------------------------------------------------------
+// API-key providers (no OAuth — just a secret key)
+// ---------------------------------------------------------------------------
+
+/** Providers that authenticate via a plain API key rather than OAuth. */
+const API_KEY_PROVIDERS: Record<string, { name: string }> = {
+  openrouter: { name: "OpenRouter" },
+  groq: { name: "Groq" },
+  cerebras: { name: "Cerebras" },
+  xai: { name: "xAI" },
+  mistral: { name: "Mistral" },
+};
+
+export function isApiKeyProvider(providerId: string): boolean {
+  return providerId in API_KEY_PROVIDERS;
+}
+
+// ---------------------------------------------------------------------------
 // Credential storage
 // ---------------------------------------------------------------------------
 
-export type AuthData = Record<string, OAuthCredentials>;
+/** Auth entry is either OAuth credentials or a plain API key string. */
+export type AuthEntry = OAuthCredentials | { apiKey: string };
+export type AuthData = Record<string, AuthEntry>;
 
 export function loadAuth(): AuthData {
   if (!existsSync(AUTH_FILE)) {
@@ -50,17 +69,38 @@ function saveAuth(data: AuthData): void {
 }
 
 // ---------------------------------------------------------------------------
+// Type helpers
+// ---------------------------------------------------------------------------
+
+function isOAuthEntry(entry: AuthEntry): entry is OAuthCredentials {
+  return "access" in entry && "refresh" in entry && "expires" in entry;
+}
+
+function isApiKeyEntry(entry: AuthEntry): entry is { apiKey: string } {
+  return "apiKey" in entry;
+}
+
+// ---------------------------------------------------------------------------
 // Login
 // ---------------------------------------------------------------------------
 
 export async function login(providerId: string): Promise<void> {
+  // API-key provider — prompt for the key directly
+  if (isApiKeyProvider(providerId)) {
+    await loginApiKeyProvider(providerId);
+    return;
+  }
+
+  // OAuth provider
   const provider = getOAuthProvider(providerId);
   if (!provider) {
-    const available = getOAuthProviders()
+    const oauthList = getOAuthProviders()
       .map((p) => p.id)
       .join(", ");
-    console.error(`Unknown OAuth provider: ${providerId}`);
-    console.error(`Available providers: ${available}`);
+    const apiKeyList = Object.keys(API_KEY_PROVIDERS).join(", ");
+    console.error(`Unknown provider: ${providerId}`);
+    console.error(`OAuth providers: ${oauthList}`);
+    console.error(`API-key providers: ${apiKeyList}`);
     process.exit(1);
   }
 
@@ -112,6 +152,25 @@ export async function login(providerId: string): Promise<void> {
   console.log(`\nLogged in to ${provider.name} successfully.`);
 }
 
+async function loginApiKeyProvider(providerId: string): Promise<void> {
+  const info = API_KEY_PROVIDERS[providerId];
+  console.log(`Logging in to ${info.name}...`);
+  console.log(`\nEnter your ${info.name} API key:`);
+  process.stdout.write("  > ");
+  const key = await readLine();
+
+  if (!key) {
+    console.error("No API key provided.");
+    process.exit(1);
+  }
+
+  const auth = loadAuth();
+  auth[providerId] = { apiKey: key };
+  saveAuth(auth);
+
+  console.log(`\nLogged in to ${info.name} successfully.`);
+}
+
 // ---------------------------------------------------------------------------
 // Logout
 // ---------------------------------------------------------------------------
@@ -139,25 +198,32 @@ export function logout(providerId?: string): void {
 
 export function authStatus(): void {
   const auth = loadAuth();
-  const providers = getOAuthProviders();
-
-  if (providers.length === 0) {
-    console.log("No OAuth providers available.");
-    return;
-  }
+  const oauthProviders = getOAuthProviders();
 
   console.log("Authentication status:\n");
 
-  for (const provider of providers) {
-    const creds = auth[provider.id];
-    if (creds) {
-      const expired = Date.now() >= creds.expires;
+  // OAuth providers
+  for (const provider of oauthProviders) {
+    const entry = auth[provider.id];
+    if (entry && isOAuthEntry(entry)) {
+      const expired = Date.now() >= entry.expires;
       const status = expired
         ? "token expired (will auto-refresh)"
         : "authenticated";
       console.log(`  ${provider.id.padEnd(22)} ✓ ${status}`);
     } else {
       console.log(`  ${provider.id.padEnd(22)} ✗ not authenticated`);
+    }
+  }
+
+  // API-key providers
+  for (const [id] of Object.entries(API_KEY_PROVIDERS)) {
+    const entry = auth[id];
+    if (entry && isApiKeyEntry(entry)) {
+      const masked = entry.apiKey.substring(0, 8) + "...";
+      console.log(`  ${id.padEnd(22)} ✓ api key (${masked})`);
+    } else {
+      console.log(`  ${id.padEnd(22)} ✗ not authenticated`);
     }
   }
 
@@ -174,12 +240,22 @@ export function listProviders(): void {
   const auth = loadAuth();
   const oauthProviders = getOAuthProviders();
 
-  console.log("Available OAuth providers:\n");
+  console.log("Available providers:\n");
 
+  // OAuth providers
   for (const provider of oauthProviders) {
-    const creds = auth[provider.id];
-    const status = creds ? "✓ logged in" : "✗ not authenticated";
+    const entry = auth[provider.id];
+    const loggedIn = entry && isOAuthEntry(entry);
+    const status = loggedIn ? "✓ logged in" : "✗ not authenticated";
     console.log(`  ${provider.id.padEnd(22)} ${status}    ${provider.name}`);
+  }
+
+  // API-key providers
+  for (const [id, info] of Object.entries(API_KEY_PROVIDERS)) {
+    const entry = auth[id];
+    const hasKey = entry && isApiKeyEntry(entry);
+    const status = hasKey ? "✓ logged in" : "✗ not authenticated";
+    console.log(`  ${id.padEnd(22)} ${status}    ${info.name} (api key)`);
   }
 
   console.log(
@@ -248,38 +324,45 @@ export function resolveOAuthProviderId(modelProvider: string): string {
 }
 
 export async function getApiKeyForProvider(
-  oauthProviderId: string
+  providerId: string
 ): Promise<string> {
   const auth = loadAuth();
-  const creds = auth[oauthProviderId];
+  const entry = auth[providerId];
 
-  if (!creds) {
-    console.error(`Not authenticated with ${oauthProviderId}.`);
-    console.error(`Run: gitgenie login ${oauthProviderId}`);
-    process.exit(1);
+  // Stored API key (from `gitgenie login <api-key-provider>`)
+  if (entry && isApiKeyEntry(entry)) {
+    return entry.apiKey;
   }
 
-  const provider = getOAuthProvider(oauthProviderId);
-  if (!provider) {
-    console.error(`Unknown OAuth provider: ${oauthProviderId}`);
-    process.exit(1);
-  }
-
-  // Check if token needs refresh
-  if (Date.now() >= creds.expires) {
-    try {
-      const refreshed = await provider.refreshToken(creds);
-      auth[oauthProviderId] = refreshed;
-      saveAuth(auth);
-      return provider.getApiKey(refreshed);
-    } catch (err) {
-      console.error(`Failed to refresh token for ${oauthProviderId}.`);
-      console.error(`Please re-authenticate: gitgenie login ${oauthProviderId}`);
+  // OAuth credentials
+  if (entry && isOAuthEntry(entry)) {
+    const provider = getOAuthProvider(providerId);
+    if (!provider) {
+      console.error(`Unknown OAuth provider: ${providerId}`);
       process.exit(1);
     }
+
+    // Check if token needs refresh
+    if (Date.now() >= entry.expires) {
+      try {
+        const refreshed = await provider.refreshToken(entry);
+        auth[providerId] = refreshed;
+        saveAuth(auth);
+        return provider.getApiKey(refreshed);
+      } catch (err) {
+        console.error(`Failed to refresh token for ${providerId}.`);
+        console.error(`Please re-authenticate: gitgenie login ${providerId}`);
+        process.exit(1);
+      }
+    }
+
+    return provider.getApiKey(entry);
   }
 
-  return provider.getApiKey(creds);
+  // No credentials found at all
+  console.error(`Not authenticated with ${providerId}.`);
+  console.error(`Run: gitgenie login ${providerId}`);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------

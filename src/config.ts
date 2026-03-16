@@ -29,6 +29,7 @@ const BUILTIN_DEFAULT_MODELS: Record<string, string> = {
   "google-gemini-cli": "gemini-2.5-pro",
   "google-antigravity": "gemini-2.5-pro",
   "github-copilot": "gpt-4o",
+  openrouter: "anthropic/claude-sonnet-4",
 };
 
 const BUILTIN_DEFAULT_PROVIDER = "anthropic";

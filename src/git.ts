@@ -12,6 +12,8 @@ export interface RefInfo {
   hash: string;
   /** Display name: tag name, branch name, or truncated hash (6 chars) */
   displayName: string;
+  /** Unix timestamp of the commit (seconds since epoch) */
+  timestamp: number;
 }
 
 export interface CommitInfo {
@@ -96,7 +98,11 @@ export function resolveRef(ref: string): RefInfo {
   const displayName =
     type === "commit" ? shortHash : ref;
 
-  return { ref, type, hash, displayName };
+  // Get commit timestamp (unix seconds)
+  const timestampStr = git(`log -1 --format="%ct" "${hash}"`);
+  const timestamp = parseInt(timestampStr, 10) || 0;
+
+  return { ref, type, hash, displayName, timestamp };
 }
 
 function getRefType(ref: string): RefType {
