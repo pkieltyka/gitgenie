@@ -64,6 +64,7 @@ Examples:
   gitgenie list-models anthropic
   gitgenie config set-model anthropic claude-opus-4-5
   gitgenie config set-provider anthropic
+  gitgenie login openrouter
 `;
 }
 
