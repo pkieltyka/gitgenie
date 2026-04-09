@@ -98,6 +98,125 @@ Format:
 - Be constructive — explain why something is an issue and how to fix it
 - If the code looks good, say so. Don't invent problems.`;
 
+// ---------------------------------------------------------------------------
+// Work Summary prompts
+// ---------------------------------------------------------------------------
+
+export const WORK_SUMMARY_SYSTEM_PROMPT = `You are a technical writer producing a work summary report.
+Summarize the engineering work completed and in-progress for the given time period.
+
+Output format — use exactly this markdown structure:
+
+## Done
+- Bullet points of completed work (merged to default branch)
+- Group related commits into a single bullet when they're part of the same effort
+- Reference PR numbers when available (e.g. "Add OpenRouter support (#2)")
+
+## In Progress
+- Bullet points of open PRs / work in progress
+- Include the PR number and a brief description
+
+## Releases
+- Only include this section if there is release branch activity
+- Note the releases that were performed
+
+Guidelines:
+- Do NOT include a title or header — one will be added automatically
+- Start directly with "## Done"
+- Be concise — one line per item
+- Use present tense for completed work ("Add", "Fix", "Remove")
+- Do NOT include author names — focus only on what was done
+- Do not invent work that isn't evidenced in the data provided
+- If a section has no items, omit it entirely`;
+
+export interface WorkSummaryData {
+  sinceDate: string;
+  defaultBranch: string;
+  masterCommits: CommitInfo[];
+  releaseCommits: CommitInfo[];
+  openPrs: Array<{
+    number: number;
+    title: string;
+    author: string;
+    url: string;
+    state: string;
+    createdAt: string;
+    headRefName: string;
+    baseRefName: string;
+    body: string;
+  }>;
+  mergedPrs: Array<{
+    number: number;
+    title: string;
+    author: string;
+    url: string;
+    state: string;
+    createdAt: string;
+    headRefName: string;
+    baseRefName: string;
+    body: string;
+  }>;
+}
+
+export function buildWorkSummaryUserMessage(data: WorkSummaryData): string {
+  const sections: string[] = [];
+
+  sections.push(`Work summary from ${data.sinceDate} to today.`);
+
+  // Master commits
+  if (data.masterCommits.length > 0) {
+    const commitLog = data.masterCommits
+      .map((c) => {
+        const body = c.body ? `\n  ${c.body}` : "";
+        return `- ${c.shortHash} ${c.subject} (${c.date})${body}`;
+      })
+      .join("\n");
+
+    sections.push(`## Commits on ${data.defaultBranch} (${data.masterCommits.length}):\n\n${commitLog}`);
+  }
+
+  // Merged PRs
+  if (data.mergedPrs.length > 0) {
+    const prList = data.mergedPrs
+      .map((pr) => {
+        const desc = pr.body
+          ? `\n  Description: ${pr.body.substring(0, 200)}${pr.body.length > 200 ? "..." : ""}`
+          : "";
+        return `- PR #${pr.number}: ${pr.title} (${pr.headRefName} → ${pr.baseRefName})${desc}`;
+      })
+      .join("\n");
+
+    sections.push(`## Merged PRs (${data.mergedPrs.length}):\n\n${prList}`);
+  }
+
+  // Open PRs
+  if (data.openPrs.length > 0) {
+    const prList = data.openPrs
+      .map((pr) => {
+        const desc = pr.body
+          ? `\n  Description: ${pr.body.substring(0, 200)}${pr.body.length > 200 ? "..." : ""}`
+          : "";
+        return `- PR #${pr.number}: ${pr.title} (created ${pr.createdAt}, ${pr.headRefName} → ${pr.baseRefName})${desc}`;
+      })
+      .join("\n");
+
+    sections.push(`## Open PRs — In Progress (${data.openPrs.length}):\n\n${prList}`);
+  }
+
+  // Release branch activity
+  if (data.releaseCommits.length > 0) {
+    const commitLog = data.releaseCommits
+      .map((c) => `- ${c.shortHash} ${c.subject} (${c.date})`)
+      .join("\n");
+
+    sections.push(`## Release branch activity (${data.releaseCommits.length} commits):\n\n${commitLog}`);
+  }
+
+  sections.push("Write a concise work summary report covering all the activity above.");
+
+  return sections.join("\n\n");
+}
+
 export function buildCodeReviewUserMessage(
   commits: CommitWithDiff[]
 ): string {

@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { login, logout, authStatus, listProviders, listModelsCmd } from "./auth.js";
 import { releaseNotesCommand } from "./commands/release-notes.js";
 import { reviewCommand, reviewGitHubPrCommand, parseGitHubPrRef } from "./commands/review.js";
+import { workSummaryCommand } from "./commands/work-summary.js";
 import { getDefaultProvider, getDefaultModel, showConfig, setDefaultModel, setDefaultProvider } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ Usage:
 Commands:
   release-notes <from-ref> <to-ref>    Generate release notes between two refs
   review <commit> [end-commit]          Code review of one or more commits
+  work-summary <since-date>             Summarize all work since a date (YYYY-MM-DD)
   login <provider>                      OAuth login to an LLM provider
   logout [provider]                     Remove stored credentials
   auth-status                           Show which providers are authenticated
@@ -53,6 +55,10 @@ Review Options:
   --save              Write to ./notes/review-YYYY-MM-DD-<suffix>.md
   --output <path>     Write to a specific file path
 
+Work Summary Options:
+  --save              Write to ./notes/work-summary-<date>.md
+  --output <path>     Write to a specific file path
+
 Examples:
   gitgenie login anthropic
   gitgenie release-notes v1.0 v1.1
@@ -65,6 +71,8 @@ Examples:
   gitgenie config set-model anthropic claude-opus-4-5
   gitgenie config set-provider anthropic
   gitgenie login openrouter
+  gitgenie work-summary 2026-04-01
+  gitgenie work-summary 2026-04-01 --save
 `;
 }
 
@@ -124,6 +132,10 @@ async function main(): Promise<void> {
 
     case "review":
       await handleReview(args.slice(1));
+      break;
+
+    case "work-summary":
+      await handleWorkSummary(args.slice(1));
       break;
 
     default:
@@ -235,6 +247,43 @@ async function handleReview(args: string[]): Promise<void> {
   await reviewCommand({
     startRef: positionals[0],
     endRef: positionals[1],
+    save: values.save,
+    output: values.output,
+    provider,
+    model,
+    verbose: values.verbose,
+  });
+}
+
+async function handleWorkSummary(args: string[]): Promise<void> {
+  const defaultProvider = getDefaultProvider();
+
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      save: { type: "boolean", default: false },
+      output: { type: "string" },
+      provider: { type: "string" },
+      model: { type: "string" },
+      verbose: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  if (positionals.length < 1) {
+    console.error("Usage: gitgenie work-summary <since-date> [options]");
+    console.error("");
+    console.error("Examples:");
+    console.error("  gitgenie work-summary 2026-04-01");
+    console.error("  gitgenie work-summary 2026-04-01 --save");
+    process.exit(1);
+  }
+
+  const provider = values.provider ?? defaultProvider;
+  const model = values.model ?? getDefaultModel(provider);
+
+  await workSummaryCommand({
+    sinceDate: positionals[0],
     save: values.save,
     output: values.output,
     provider,
