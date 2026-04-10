@@ -342,6 +342,86 @@ export function getFullCommitDiffs(commits: CommitInfo[]): CommitWithDiff[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Diff splitting
+// ---------------------------------------------------------------------------
+
+export interface FileDiff {
+  /** File path (from the diff header) */
+  filePath: string;
+  /** The full unified diff chunk for this file */
+  diff: string;
+  /** Estimated token count */
+  estimatedTokens: number;
+}
+
+/**
+ * Split a unified diff string into per-file chunks.
+ */
+export function splitDiffByFile(diff: string): FileDiff[] {
+  const files: FileDiff[] = [];
+  // Split on "diff --git" boundaries, keeping the delimiter
+  const parts = diff.split(/(?=^diff --git )/m);
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed || !trimmed.startsWith("diff --git ")) continue;
+
+    // Extract file path from "diff --git a/path b/path"
+    const headerMatch = trimmed.match(/^diff --git a\/(.+?) b\/(.+)/m);
+    const filePath = headerMatch ? headerMatch[2] : "unknown";
+
+    files.push({
+      filePath,
+      diff: trimmed,
+      estimatedTokens: Math.ceil(trimmed.length / CHARS_PER_TOKEN),
+    });
+  }
+
+  return files;
+}
+
+/**
+ * Group file diffs into chunks that fit within a token budget.
+ * Returns arrays of FileDiff groups.
+ */
+export function chunkFileDiffs(
+  files: FileDiff[],
+  maxTokensPerChunk: number
+): FileDiff[][] {
+  const chunks: FileDiff[][] = [];
+  let currentChunk: FileDiff[] = [];
+  let currentTokens = 0;
+
+  for (const file of files) {
+    // If a single file exceeds the budget, it gets its own chunk
+    if (file.estimatedTokens > maxTokensPerChunk) {
+      if (currentChunk.length > 0) {
+        chunks.push(currentChunk);
+        currentChunk = [];
+        currentTokens = 0;
+      }
+      chunks.push([file]);
+      continue;
+    }
+
+    if (currentTokens + file.estimatedTokens > maxTokensPerChunk && currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentTokens = 0;
+    }
+
+    currentChunk.push(file);
+    currentTokens += file.estimatedTokens;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
 /**
  * Count commits in a range (exclusive of fromRef).
  */

@@ -32,7 +32,7 @@ export interface LlmResult {
 export async function callLlm(
   systemPrompt: string,
   userMessage: string,
-  options: LlmOptions
+  options: LlmOptions & { silent?: boolean }
 ): Promise<LlmResult> {
   const oauthProviderId = resolveOAuthProviderId(options.provider);
   const apiKey = await getApiKeyForProvider(oauthProviderId);
@@ -72,7 +72,9 @@ export async function callLlm(
 
   for await (const event of s) {
     if (event.type === "text_delta") {
-      process.stdout.write(event.delta);
+      if (!options.silent) {
+        process.stdout.write(event.delta);
+      }
       fullText += event.delta;
     } else if (event.type === "error") {
       const errMsg =
@@ -86,7 +88,9 @@ export async function callLlm(
 
   // Ensure trailing newline
   if (fullText && !fullText.endsWith("\n")) {
-    process.stdout.write("\n");
+    if (!options.silent) {
+      process.stdout.write("\n");
+    }
     fullText += "\n";
   }
 

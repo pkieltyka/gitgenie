@@ -98,6 +98,61 @@ Format:
 - Be constructive — explain why something is an issue and how to fix it
 - If the code looks good, say so. Don't invent problems.`;
 
+export const CODE_REVIEW_CHUNK_SYSTEM_PROMPT = `You are a senior software engineer performing a thorough code review.
+Analyze the provided git diffs for this SUBSET of files and produce a detailed review in markdown.
+Note: This is a partial review — other files in the changeset will be reviewed separately.
+
+Review criteria:
+- Bugs and logic errors
+- Security vulnerabilities (injection, auth issues, data exposure, etc.)
+- Performance concerns (unnecessary allocations, N+1 queries, blocking calls, etc.)
+- Error handling gaps (uncaught exceptions, missing validation, etc.)
+- Code clarity and maintainability
+- Suggestions for improvement
+
+Format:
+- Do NOT include a title or header
+- Start with a brief summary of what the changes in these files do
+- Group findings by severity using ## headings: ## Critical, ## Warnings, ## Suggestions
+- Only include severity sections that have findings — omit empty sections
+- For each finding, reference the specific file and code involved
+- Be constructive — explain why something is an issue and how to fix it
+- If the code looks good, say so. Don't invent problems.`;
+
+export const CODE_REVIEW_MERGE_SYSTEM_PROMPT = `You are a senior software engineer merging multiple partial code review reports into a single cohesive review.
+You will receive individual reviews of different file groups from the same changeset.
+
+Your job:
+- Combine all findings into a single unified review
+- Deduplicate any repeated observations
+- Look for cross-file issues that individual reviews may have missed (e.g. an interface change in one file that breaks usage in another)
+- Maintain the severity groupings: ## Critical, ## Warnings, ## Suggestions
+
+Format:
+- Do NOT include a title or header — one will be added automatically
+- Start with a brief overall summary of the entire changeset
+- Group findings by severity using ## headings: ## Critical, ## Warnings, ## Suggestions
+- Only include severity sections that have findings — omit empty sections
+- For each finding, reference the specific file and code involved
+- If the code looks good overall, say so. Don't invent problems.`;
+
+export function buildChunkedReviewMergeMessage(
+  partialReviews: { chunkIndex: number; fileList: string[]; review: string }[]
+): string {
+  const sections = partialReviews
+    .map((r) => {
+      const files = r.fileList.map((f) => `  - ${f}`).join("\n");
+      return `## Partial Review ${r.chunkIndex + 1} (files:\n${files}\n)\n\n${r.review}`;
+    })
+    .join("\n\n---\n\n");
+
+  return `Merge the following ${partialReviews.length} partial code reviews into a single cohesive review:
+
+${sections}
+
+Produce a single unified code review.`;
+}
+
 // ---------------------------------------------------------------------------
 // Work Summary prompts
 // ---------------------------------------------------------------------------

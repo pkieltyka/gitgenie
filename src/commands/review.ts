@@ -2,15 +2,20 @@ import { execSync } from "child_process";
 import {
   ensureGitRepo,
   resolveRef,
-  getCommits,
   getCommitsInclusive,
   getFullCommitDiffs,
   estimateDiffTokens,
+  splitDiffByFile,
+  chunkFileDiffs,
   type CommitInfo,
+  type FileDiff,
 } from "../git.js";
 import {
   CODE_REVIEW_SYSTEM_PROMPT,
+  CODE_REVIEW_CHUNK_SYSTEM_PROMPT,
+  CODE_REVIEW_MERGE_SYSTEM_PROMPT,
   buildCodeReviewUserMessage,
+  buildChunkedReviewMergeMessage,
 } from "../prompt.js";
 import { callLlm, getModelContextWindow, type LlmOptions } from "../llm.js";
 import {
@@ -54,6 +59,65 @@ function gh(args: string): string {
   }
 }
 
+/**
+ * Run a chunked review: review file groups separately, then merge results.
+ */
+async function runChunkedReview(
+  chunks: FileDiff[][],
+  contextDescription: string,
+  options: LlmOptions
+): Promise<string> {
+  const partialReviews: { chunkIndex: number; fileList: string[]; review: string }[] = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const fileList = chunk.map((f) => f.filePath);
+    const combinedDiff = chunk.map((f) => f.diff).join("\n\n");
+
+    console.error(`Reviewing chunk ${i + 1}/${chunks.length} (${chunk.length} files)...`);
+    if (options.verbose) {
+      for (const f of fileList) {
+        console.error(`  - ${f}`);
+      }
+    }
+
+    const chunkMessage = `${contextDescription}
+
+This is chunk ${i + 1} of ${chunks.length} — reviewing the following files:
+${fileList.map((f) => `- ${f}`).join("\n")}
+
+## Diff:
+\`\`\`diff
+${combinedDiff}
+\`\`\`
+
+Provide a thorough code review of these files.`;
+
+    const chunkResult = await callLlm(
+      CODE_REVIEW_CHUNK_SYSTEM_PROMPT,
+      chunkMessage,
+      { ...options, silent: true }
+    );
+
+    partialReviews.push({
+      chunkIndex: i,
+      fileList,
+      review: chunkResult.content,
+    });
+  }
+
+  // Merge partial reviews
+  console.error(`Merging ${partialReviews.length} partial reviews...`);
+  const mergeMessage = buildChunkedReviewMergeMessage(partialReviews);
+  const mergeResult = await callLlm(
+    CODE_REVIEW_MERGE_SYSTEM_PROMPT,
+    mergeMessage,
+    options
+  );
+
+  return mergeResult.content;
+}
+
 export async function reviewGitHubPrCommand(
   options: GitHubPrReviewOptions
 ): Promise<void> {
@@ -95,7 +159,38 @@ export async function reviewGitHubPrCommand(
 
 `;
 
-  const userMessage = `Review the following GitHub Pull Request:
+  const estimatedTokens = Math.ceil(diff.length / 4);
+  const contextWindow = getModelContextWindow(options.provider, options.model);
+  // Reserve ~40% for system prompt + response
+  const availableTokens = Math.floor(contextWindow * 0.6);
+
+  if (options.verbose) {
+    console.error(`Estimated diff size: ~${Math.round(estimatedTokens / 1000)}k tokens (${Math.round(availableTokens / 1000)}k available)`);
+    console.error("");
+  }
+
+  process.stdout.write(header);
+
+  let reviewContent: string;
+
+  if (estimatedTokens > availableTokens) {
+    // Chunked review
+    const files = splitDiffByFile(diff);
+    const chunks = chunkFileDiffs(files, availableTokens);
+
+    console.error(
+      `Diff too large for single request (~${Math.round(estimatedTokens / 1000)}k tokens). Splitting into ${chunks.length} chunks...`
+    );
+
+    const contextDescription = `Review the following files from GitHub Pull Request #${meta.number}: ${meta.title}
+**Author:** ${meta.author?.login ?? "unknown"}
+**Description:**
+${meta.body || "(no description)"}`;
+
+    reviewContent = await runChunkedReview(chunks, contextDescription, options);
+  } else {
+    // Single review
+    const userMessage = `Review the following GitHub Pull Request:
 
 ## PR #${meta.number}: ${meta.title}
 **Author:** ${meta.author?.login ?? "unknown"}
@@ -109,22 +204,14 @@ ${diff}
 
 Provide a thorough code review.`;
 
-  if (options.verbose) {
-    const estimatedTokens = Math.ceil(
-      (userMessage.length + header.length) / 4
-    );
-    console.error(`Estimated diff size: ~${Math.round(estimatedTokens / 1000)}k tokens`);
-    console.error("");
+    const result = await callLlm(CODE_REVIEW_SYSTEM_PROMPT, userMessage, options);
+    reviewContent = result.content;
   }
-
-  process.stdout.write(header);
-
-  const result = await callLlm(CODE_REVIEW_SYSTEM_PROMPT, userMessage, options);
 
   if (options.save || options.output) {
     const outputPath =
       options.output ?? `notes/review-${today}-pr${meta.number}.md`;
-    writeOutputFile(outputPath, header + result.content);
+    writeOutputFile(outputPath, header + reviewContent);
   }
 }
 
@@ -204,27 +291,8 @@ export async function reviewCommand(options: ReviewOptions): Promise<void> {
   // Check if total diff size fits in context window
   const estimatedTokens = estimateDiffTokens(commits);
   const contextWindow = getModelContextWindow(options.provider, options.model);
-  // Reserve ~20% for system prompt + response
-  const availableTokens = Math.floor(contextWindow * 0.8);
-
-  if (estimatedTokens > availableTokens) {
-    console.error(
-      `Error: diff too large (estimated ~${Math.round(estimatedTokens / 1000)}k tokens, model limit ~${Math.round(availableTokens / 1000)}k available).`
-    );
-    console.error(
-      "Try reviewing fewer commits. For example:"
-    );
-    if (endRefInfo) {
-      console.error(
-        `  gitgenie review ${startRefInfo.displayName} <a-closer-commit>`
-      );
-    } else {
-      console.error(
-        "  The single commit's diff exceeds the context window."
-      );
-    }
-    process.exit(1);
-  }
+  // Reserve ~40% for system prompt + response
+  const availableTokens = Math.floor(contextWindow * 0.6);
 
   if (options.verbose) {
     console.error(
@@ -254,18 +322,39 @@ export async function reviewCommand(options: ReviewOptions): Promise<void> {
   // Print header
   process.stdout.write(header);
 
-  // Build user message and call LLM
-  const userMessage = buildCodeReviewUserMessage(commitDiffs);
+  let reviewContent: string;
 
-  const result = await callLlm(
-    CODE_REVIEW_SYSTEM_PROMPT,
-    userMessage,
-    options
-  );
+  if (estimatedTokens > availableTokens) {
+    // Chunked review: split all commit diffs by file and chunk
+    const allPatches = commitDiffs.map((c) => c.patch).join("\n\n");
+    const files = splitDiffByFile(allPatches);
+    const chunks = chunkFileDiffs(files, availableTokens);
+
+    console.error(
+      `Diff too large for single request (~${Math.round(estimatedTokens / 1000)}k tokens). Splitting into ${chunks.length} chunks...`
+    );
+
+    const rangeDesc = endRefInfo
+      ? `${startRefInfo.displayName}..${endRefInfo.displayName}`
+      : startRefInfo.displayName;
+
+    const contextDescription = `Review the following files from commit(s) ${rangeDesc} (${commits.length} total commits).`;
+
+    reviewContent = await runChunkedReview(chunks, contextDescription, options);
+  } else {
+    // Single review
+    const userMessage = buildCodeReviewUserMessage(commitDiffs);
+    const result = await callLlm(
+      CODE_REVIEW_SYSTEM_PROMPT,
+      userMessage,
+      options
+    );
+    reviewContent = result.content;
+  }
 
   // Save if requested
   if (outputPath) {
-    const fullContent = header + result.content;
+    const fullContent = header + reviewContent;
     writeOutputFile(outputPath, fullContent);
   }
 }
